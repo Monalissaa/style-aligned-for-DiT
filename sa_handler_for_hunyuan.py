@@ -38,6 +38,7 @@ class StyleAlignedArgs:
     shared_score_scale: float = 1.
     shared_score_shift: float = 0.
     only_self_level: float = 0.
+    number_of_share_layer: int = 40
 
 
 def expand_first(feat: T, scale=1.,) -> T:
@@ -154,12 +155,12 @@ class SharedAttentionProcessor(DefaultAttentionProcessor):
                 key = apply_rotary_emb(key, image_rotary_emb)
 
         # if self.step >= self.start_inject:
-        # if self.adain_queries:
-        #     query = adain(query)
-        # if self.adain_keys:
-        #     key = adain(key)
-        # if self.adain_values:
-        #     value = adain(value)
+        if self.adain_queries:
+            query = adain(query)
+        if self.adain_keys:
+            key = adain(key)
+        if self.adain_values:
+            value = adain(value)
         if self.share_attention:
             key = concat_first(key, -2, scale=self.shared_score_scale)
             value = concat_first(value, -2)
@@ -244,7 +245,7 @@ def init_attention_processors(pipeline: HunyuanDiTPipeline, style_aligned_args: 
         is_self_attention = 'attn1' in name
         if is_self_attention:
             number_of_self += 1
-            if style_aligned_args is None or only_self_vec[i // 2]:
+            if (style_aligned_args is None or only_self_vec[i // 2]) or number_of_self > style_aligned_args.number_of_share_layer:
                 attn_procs[name] = DefaultAttentionProcessor()
             else:
                 attn_procs[name] = SharedAttentionProcessor(style_aligned_args)
@@ -255,43 +256,43 @@ def init_attention_processors(pipeline: HunyuanDiTPipeline, style_aligned_args: 
     transformer.set_attn_processor(attn_procs)
 
 
-# def register_shared_norm(pipeline: StableDiffusionXLPipeline,
-#                          share_group_norm: bool = True,
-#                          share_layer_norm: bool = True, ):
-#     def register_norm_forward(norm_layer: nn.GroupNorm | nn.LayerNorm) -> nn.GroupNorm | nn.LayerNorm:
-#         if not hasattr(norm_layer, 'orig_forward'):
-#             setattr(norm_layer, 'orig_forward', norm_layer.forward)
-#         orig_forward = norm_layer.orig_forward
+def register_shared_norm(pipeline: HunyuanDiTPipeline,
+                         share_group_norm: bool = True,
+                         share_layer_norm: bool = True, ):
+    def register_norm_forward(norm_layer: nn.GroupNorm | nn.LayerNorm) -> nn.GroupNorm | nn.LayerNorm:
+        if not hasattr(norm_layer, 'orig_forward'):
+            setattr(norm_layer, 'orig_forward', norm_layer.forward)
+        orig_forward = norm_layer.orig_forward
 
-#         def forward_(hidden_states: T) -> T:
-#             n = hidden_states.shape[-2]
-#             hidden_states = concat_first(hidden_states, dim=-2)
-#             hidden_states = orig_forward(hidden_states)
-#             return hidden_states[..., :n, :]
+        def forward_(hidden_states: T) -> T:
+            n = hidden_states.shape[-2]
+            hidden_states = concat_first(hidden_states, dim=-2)
+            hidden_states = orig_forward(hidden_states)
+            return hidden_states[..., :n, :]
 
-#         norm_layer.forward = forward_
-#         return norm_layer
+        norm_layer.forward = forward_
+        return norm_layer
 
-#     def get_norm_layers(pipeline_, norm_layers_: dict[str, list[nn.GroupNorm | nn.LayerNorm]]):
-#         if isinstance(pipeline_, nn.LayerNorm) and share_layer_norm:
-#             norm_layers_['layer'].append(pipeline_)
-#         if isinstance(pipeline_, nn.GroupNorm) and share_group_norm:
-#             norm_layers_['group'].append(pipeline_)
-#         else:
-#             for layer in pipeline_.children():
-#                 get_norm_layers(layer, norm_layers_)
+    def get_norm_layers(pipeline_, norm_layers_: dict[str, list[nn.GroupNorm | nn.LayerNorm]]):
+        if isinstance(pipeline_, nn.LayerNorm) and share_layer_norm:
+            norm_layers_['layer'].append(pipeline_)
+        if isinstance(pipeline_, nn.GroupNorm) and share_group_norm:
+            norm_layers_['group'].append(pipeline_)
+        else:
+            for layer in pipeline_.children():
+                get_norm_layers(layer, norm_layers_)
 
-#     norm_layers = {'group': [], 'layer': []}
-#     get_norm_layers(pipeline.unet, norm_layers)
-#     return [register_norm_forward(layer) for layer in norm_layers['group']] + [register_norm_forward(layer) for layer in
-#                                                                                norm_layers['layer']]
+    norm_layers = {'group': [], 'layer': []}
+    get_norm_layers(pipeline.transformer, norm_layers)
+    return [register_norm_forward(layer) for layer in norm_layers['group']] + [register_norm_forward(layer) for layer in
+                                                                               norm_layers['layer']]
 
 
 class Handler:
 
     def register(self, style_aligned_args: StyleAlignedArgs, ):
-        # self.norm_layers = register_shared_norm(self.pipeline, style_aligned_args.share_group_norm,
-        #                                         style_aligned_args.share_layer_norm)
+        self.norm_layers = register_shared_norm(self.pipeline, style_aligned_args.share_group_norm,
+                                                style_aligned_args.share_layer_norm)
         init_attention_processors(self.pipeline, style_aligned_args)
 
     def remove(self):
