@@ -15,13 +15,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from diffusers import HunyuanDiTPipeline
 import torch
 import torch.nn as nn
 from torch.nn import functional as nnf
 from diffusers.models import attention_processor
 import einops
+from typing import List 
 
 T = torch.Tensor
 
@@ -39,6 +40,8 @@ class StyleAlignedArgs:
     shared_score_shift: float = 0.
     only_self_level: float = 0.
     number_of_share_layer: int = 40
+    specific_share_layer: List[int] = field(default_factory=list)
+    not_share_layers: List[int] = field(default_factory=list)
 
 
 def expand_first(feat: T, scale=1.,) -> T:
@@ -56,6 +59,8 @@ def concat_first(feat: T, dim=2, scale=1.) -> T:
     feat_style = expand_first(feat, scale=scale)
     return torch.cat((feat, feat_style), dim=dim)
 
+def concat_all(feat: T, dim=2, scale=1.) -> T:
+    return torch.cat((feat, feat), dim=dim)
 
 def calc_mean_std(feat, eps: float = 1e-5) -> tuple[T, T]:
     feat_std = (feat.var(dim=-2, keepdims=True) + eps).sqrt()
@@ -245,7 +250,7 @@ def init_attention_processors(pipeline: HunyuanDiTPipeline, style_aligned_args: 
         is_self_attention = 'attn1' in name
         if is_self_attention:
             number_of_self += 1
-            if (style_aligned_args is None or only_self_vec[i // 2]) or number_of_self > style_aligned_args.number_of_share_layer:
+            if (style_aligned_args is None or only_self_vec[i // 2]) or number_of_self > style_aligned_args.number_of_share_layer or (number_of_self not in style_aligned_args.specific_share_layer and len(style_aligned_args.specific_share_layer) > 0) or (number_of_self in style_aligned_args.not_share_layers):
                 attn_procs[name] = DefaultAttentionProcessor()
             else:
                 attn_procs[name] = SharedAttentionProcessor(style_aligned_args)
